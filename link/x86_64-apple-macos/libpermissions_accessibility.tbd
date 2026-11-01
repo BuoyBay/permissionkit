@@ -1,0 +1,8 @@
+--- !tapi-tbd
+tbd-version: 4
+targets: [ arm64-macos, x86_64-macos ]
+install-name: '/System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/HIServices.framework/Versions/A/HIServices'
+exports:
+  - targets: [ arm64-macos, x86_64-macos ]
+    symbols: [ _AXIsProcessTrustedWithOptions ]
+...

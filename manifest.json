@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "name": "permissionkit",
+  "version": "0.1.0",
+  "description": "Requester identity diagnostics and explicit macOS Accessibility/input permission sessions",
+  "platforms": [
+    "arm64-apple-macos",
+    "x86_64-apple-macos",
+    "aarch64-pc-windows-msvc",
+    "x86_64-pc-windows-msvc",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu"
+  ],
+  "libraries": [
+    {
+      "libName": "permissions_security",
+      "system": true
+    },
+    {
+      "libName": "permissions_accessibility",
+      "system": true
+    },
+    {
+      "libName": "permissions_events",
+      "system": true
+    }
+  ]
+}

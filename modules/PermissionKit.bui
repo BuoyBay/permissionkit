@@ -1,0 +1,245 @@
+''' macOS permission diagnostics and explicit, non-repeating request sessions.
+Public Enum PermissionKind As Integer
+    Accessibility = 1
+    EventPosting = 2
+    InputMonitoring = 3
+End Enum
+
+Public Enum PermissionSessionState As Integer
+    Idle = 0
+    Waiting = 1
+    Granted = 2
+    Stopped = 3
+End Enum
+
+Public Function PermissionsSupported() As Boolean
+    #If TargetMac Then
+        Return True
+    #Else
+        Return False
+    #End If
+End Function
+
+#If TargetMac Then
+    Private Declare Function NativeClass Lib "objc" Alias "objc_getClass" (name As String) As Ptr
+    Private Declare Function NativeMainThread Lib "Foundation" Selector "isMainThread" (cls As Ptr) As UInt8
+    Private Declare Function SharedBundle Lib "Foundation" Selector "mainBundle" (cls As Ptr) As Ptr
+    Private Declare Function BundleValue Lib "Foundation" Selector "objectForInfoDictionaryKey:" (bundle As Ptr, key As CFStringRef) As Ptr
+    Private Declare Function BundlePath Lib "Foundation" Selector "bundlePath" (bundle As Ptr) As Ptr
+    Private Declare Function NewDictionary Lib "Foundation" Selector "new" (cls As Ptr) As Ptr
+    Private Declare Sub DictionarySet Lib "Foundation" Selector "setObject:forKey:" (dictionary As Ptr, value As Ptr, key As Ptr)
+    Private Declare Function DictionaryValue Lib "CoreFoundation" Alias "CFDictionaryGetValue" (dictionary As Ptr, key As Ptr) As Ptr
+    Private Declare Function ArrayCount Lib "CoreFoundation" Alias "CFArrayGetCount" (values As Ptr) As Integer
+    Private Declare Function NumberValue Lib "Foundation" Selector "unsignedLongLongValue" (number As Ptr) As UInt64
+    Private Declare Sub ReleaseObject Lib "CoreFoundation" Alias "CFRelease" (object As Ptr)
+    Private Declare Function FindSymbol Lib "c" Alias "dlsym" (handle As Ptr, name As String) As Ptr
+    Private Declare Function CopyPointer Lib "c" Alias "memcpy" (ByRef output As Ptr, source As Ptr, size As Integer) As Ptr
+    Private Declare Function CopySelf Lib "permissions_security" Alias "SecCodeCopySelf" (codeFlags As UInt32, ByRef code As Ptr) As Int32
+    Private Declare Function CopyStatic Lib "permissions_security" Alias "SecCodeCopyStaticCode" (code As Ptr, codeFlags As UInt32, ByRef staticCode As Ptr) As Int32
+    Private Declare Function CopySigning Lib "permissions_security" Alias "SecCodeCopySigningInformation" (code As Ptr, codeFlags As UInt32, ByRef information As Ptr) As Int32
+    Private Declare Function CopyRequirement Lib "permissions_security" Alias "SecCodeCopyDesignatedRequirement" (code As Ptr, codeFlags As UInt32, ByRef requirement As Ptr) As Int32
+    Private Declare Function RequirementText Lib "permissions_security" Alias "SecRequirementCopyString" (requirement As Ptr, codeFlags As UInt32, ByRef text As Ptr) As Int32
+    Private Declare Function AccessibilityCheck Lib "permissions_accessibility" Alias "AXIsProcessTrustedWithOptions" (options As Ptr) As UInt8
+    Private Declare Function PostingCheck Lib "permissions_events" Alias "CGPreflightPostEventAccess" () As UInt8
+    Private Declare Function PostingRequest Lib "permissions_events" Alias "CGRequestPostEventAccess" () As UInt8
+    Private Declare Function MonitoringCheck Lib "permissions_events" Alias "CGPreflightListenEventAccess" () As UInt8
+    Private Declare Function MonitoringRequest Lib "permissions_events" Alias "CGRequestListenEventAccess" () As UInt8
+
+    Private Function ConstantValue(name As String) As Ptr
+        Dim address As Ptr = FindSymbol(CType(-2, Ptr), name)
+        If address = Nil Then Throw New UnsupportedOperationException("Missing macOS permission API constant")
+        Dim value As Ptr = Nil
+        CopyPointer(value, address, 8)
+        Return value
+    End Function
+    Private Function NativeText(value As Ptr) As String
+        If value = Nil Then Return ""
+        Return CType(CType(value, CFStringRef), String)
+    End Function
+    Private Function InfoText(bundle As Ptr, key As String) As String
+        Dim nativeKey As CFStringRef = CType(key, CFStringRef)
+        Try
+            Return NativeText(BundleValue(bundle, nativeKey))
+        Finally
+            ReleaseObject(nativeKey)
+        End Try
+    End Function
+#End If
+
+''' Identity diagnostics are not a promise that TCC will grant or preserve access.
+Public Class PermissionIdentity
+    Public Property Name As String
+    Public Property BundleIdentifier As String
+    Public Property ExecutablePath As String
+    Public Property ApplicationPath As String
+    Public Property IsApplicationBundle As Boolean = False
+    Public Property IsTemporary As Boolean = False
+    Public Property SigningStatus As Integer = -1
+    Public Property SigningIdentifier As String
+    Public Property TeamIdentifier As String
+    Public Property DesignatedRequirement As String
+    Public Property IsAdHoc As Boolean = False
+    Public Property HasSigningCertificate As Boolean = False
+
+    Public Sub Constructor()
+        Dim executable As FileSystemItem = Application.Executable
+        If executable <> Nil Then
+            Me.ExecutablePath = executable.NativePath
+            Me.Name = executable.Name()
+        End If
+        #If TargetMac Then
+            Dim bundle As Ptr = SharedBundle(NativeClass("NSBundle"))
+            Me.BundleIdentifier = InfoText(bundle, "CFBundleIdentifier")
+            Dim display As String = InfoText(bundle, "CFBundleDisplayName")
+            If display = "" Then display = InfoText(bundle, "CFBundleName")
+            If display <> "" Then Me.Name = display
+            Me.ApplicationPath = NativeText(BundlePath(bundle))
+            Me.IsApplicationBundle = String.Right(String.LCase(Me.ApplicationPath), 4) = ".app"
+            Me.IsTemporary = String.Left(Me.ApplicationPath, 5) = "/tmp/" Or String.Left(Me.ApplicationPath, 13) = "/private/tmp/" Or String.Contains(Me.ApplicationPath, "/var/folders/")
+            Dim code As Ptr = Nil
+            Dim staticCode As Ptr = Nil
+            Dim information As Ptr = Nil
+            Dim requirement As Ptr = Nil
+            Dim text As Ptr = Nil
+            Try
+                Me.SigningStatus = CopySelf(0, code)
+                If Me.SigningStatus <> 0 Then Return
+                Me.SigningStatus = CopyStatic(code, 0, staticCode)
+                If Me.SigningStatus <> 0 Then Return
+                Me.SigningStatus = CopySigning(staticCode, 2, information)
+                If Me.SigningStatus <> 0 Then Return
+                Dim codeFlags As Ptr = DictionaryValue(information, ConstantValue("kSecCodeInfoFlags"))
+                If codeFlags <> Nil Then Me.IsAdHoc = (NumberValue(codeFlags) And 2) <> 0
+                Me.SigningIdentifier = NativeText(DictionaryValue(information, ConstantValue("kSecCodeInfoIdentifier")))
+                Me.TeamIdentifier = NativeText(DictionaryValue(information, ConstantValue("kSecCodeInfoTeamIdentifier")))
+                Dim certificates As Ptr = DictionaryValue(information, ConstantValue("kSecCodeInfoCertificates"))
+                If certificates <> Nil Then Me.HasSigningCertificate = ArrayCount(certificates) > 0
+                If CopyRequirement(staticCode, 0, requirement) = 0 Then
+                    If RequirementText(requirement, 0, text) = 0 Then Me.DesignatedRequirement = NativeText(text)
+                End If
+            Finally
+                If text <> Nil Then ReleaseObject(text)
+                If requirement <> Nil Then ReleaseObject(requirement)
+                If information <> Nil Then ReleaseObject(information)
+                If staticCode <> Nil Then ReleaseObject(staticCode)
+                If code <> Nil Then ReleaseObject(code)
+            End Try
+        #End If
+    End Sub
+
+    Public Function Summary() As String
+        Dim signing As String = "unavailable"
+        If Me.SigningStatus = 0 Then
+            signing = "unsigned or unrecognized"
+            If Me.IsAdHoc Then signing = "ad-hoc (changes across rebuilds)"
+            If Me.HasSigningCertificate And Not Me.IsAdHoc Then signing = "certificate-signed; compare designated requirements across builds"
+        End If
+        Return Me.Name + "\nBundle ID: " + Me.BundleIdentifier + "\nApplication: " + Me.ApplicationPath + "\nSigning: " + signing + "\nTeam: " + Me.TeamIdentifier
+    End Function
+End Class
+
+Private Sub ValidateKind(kind As PermissionKind)
+    Select Case kind
+        Case PermissionKind.Accessibility, PermissionKind.EventPosting, PermissionKind.InputMonitoring
+        Case Else
+            Throw New InvalidArgumentException("Unknown permission kind")
+    End Select
+    If Not PermissionsSupported() Then Throw New UnsupportedOperationException("These permissions require macOS")
+End Sub
+
+''' Read-only preflight. False does not distinguish denial from approval still pending.
+Public Function HasPermission(kind As PermissionKind) As Boolean
+    ValidateKind(kind)
+    #If TargetMac Then
+        Select Case kind
+            Case PermissionKind.Accessibility
+                Return AccessibilityCheck(Nil) <> 0
+            Case PermissionKind.EventPosting
+                Return PostingCheck() <> 0
+            Case PermissionKind.InputMonitoring
+                Return MonitoringCheck() <> 0
+        End Select
+    #End If
+    Return False
+End Function
+
+''' Explicit user action only. Grants apply to this requester, never to another app.
+Public Function RequestPermission(kind As PermissionKind) As Boolean
+    ValidateKind(kind)
+    #If TargetMac Then
+        If NativeMainThread(NativeClass("NSThread")) = 0 Then Throw New InvalidArgumentException("Start permission requests on the main UI thread")
+    #End If
+    Dim identity As New PermissionIdentity()
+    If Not identity.IsApplicationBundle Or identity.IsTemporary Or identity.BundleIdentifier = "" Then
+        Throw New UnsupportedOperationException("Use a persistent, named .app for permission requests, not a temporary test executable")
+    End If
+    #If TargetMac Then
+        Select Case kind
+            Case PermissionKind.Accessibility
+                Dim options As Ptr = NewDictionary(NativeClass("NSMutableDictionary"))
+                Try
+                    DictionarySet(options, ConstantValue("kCFBooleanTrue"), ConstantValue("kAXTrustedCheckOptionPrompt"))
+                    Return AccessibilityCheck(options) <> 0
+                Finally
+                    ReleaseObject(options)
+                End Try
+            Case PermissionKind.EventPosting
+                Return PostingRequest() <> 0
+            Case PermissionKind.InputMonitoring
+                Return MonitoringRequest() <> 0
+        End Select
+    #End If
+    Return False
+End Function
+
+''' Start requests once; Refresh only preflights. No timeout, repeated prompts or auto-grant.
+Public Class PermissionSession
+    Private Property mKind As PermissionKind
+    Private Property mState As PermissionSessionState = PermissionSessionState.Idle
+    Private Property mStarting As Boolean = False
+    Public Property Kind As PermissionKind
+        Get
+            Return Me.mKind
+        End Get
+    End Property
+    Public Property State As PermissionSessionState
+        Get
+            Return Me.mState
+        End Get
+    End Property
+    Public Sub Constructor(kind As PermissionKind)
+        ValidateKind(kind)
+        Me.mKind = kind
+    End Sub
+    Public Sub Start()
+        If Me.State <> PermissionSessionState.Idle Or Me.mStarting Then Return
+        If HasPermission(Me.Kind) Then
+            Me.mState = PermissionSessionState.Granted
+        Else
+            Dim granted As Boolean = False
+            Me.mStarting = True
+            Try
+                granted = RequestPermission(Me.Kind)
+            Finally
+                Me.mStarting = False
+            End Try
+            If granted Then
+                Me.mState = PermissionSessionState.Granted
+            Else
+                Me.mState = PermissionSessionState.Waiting
+            End If
+        End If
+    End Sub
+    Public Sub Refresh()
+        If Me.mState = PermissionSessionState.Waiting Or Me.mState = PermissionSessionState.Granted Then
+            If HasPermission(Me.Kind) Then
+                Me.mState = PermissionSessionState.Granted
+            Else
+                Me.mState = PermissionSessionState.Waiting
+            End If
+        End If
+    End Sub
+    Public Sub StopWaiting()
+        If Me.mState = PermissionSessionState.Waiting Then Me.mState = PermissionSessionState.Stopped
+    End Sub
+End Class
