@@ -1,4 +1,4 @@
-# Inspect requester identity and manage macOS permissions
+# macOS permissions and requester identity
 
 Reusable macOS permission diagnostics and explicit request sessions. Import
 `permissionkit` from the sealed package. It supports Accessibility, input event
@@ -22,7 +22,7 @@ consumer project for reproducible installs.
 
 ## Example
 
-```buoy
+```basic
 Import permissionkit
 
 Sub Main()
