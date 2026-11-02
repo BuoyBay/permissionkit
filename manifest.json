@@ -2,7 +2,7 @@
     "schema": 1,
     "name": "permissionkit",
     "version": "0.1.0",
-    "description": "macOS permissions and requester identity",
+    "description": "macOS permission prompts",
     "platforms": [
         "arm64-apple-macos",
         "x86_64-apple-macos",

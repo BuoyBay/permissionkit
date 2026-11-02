@@ -1,4 +1,4 @@
-# macOS permissions and requester identity
+# macOS permission prompts
 
 Reusable macOS permission diagnostics and explicit request sessions. Import
 `permissionkit` from the sealed package. It supports Accessibility, input event
