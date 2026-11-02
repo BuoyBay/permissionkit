@@ -29,14 +29,7 @@ Keep the bundle ID and installed location consistent. An unchanged signed binary
 retains its code identity. Rebuilding an ad-hoc signed binary changes its code
 requirement; the same ID alone cannot promise that macOS will retain grants.
 For rebuilds, use a consistent signing certificate and compare designated
-requirements. The helper is a diagnostic requester, not an IPC permission broker:
-its grants cannot authorize Calls or a transient test harness.
+requirements. Permission grants apply to the calling application identity.
 
 See [Apple TN3127](https://developer.apple.com/documentation/technotes/tn3127-inside-code-signing-requirements)
-and the persistent helper (not included in this repository).
-
-## Verification
-
-
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
+for code-signing requirements.
